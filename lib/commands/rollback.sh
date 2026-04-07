@@ -4,13 +4,17 @@
 rollback_command() {
     check_root
 
+    resolve_config_file
+
     if [ ! -f "$CONFIG_FILE" ]; then
-        print_error "No deployment config found at $CONFIG_FILE. Run 'deployr deploy' first."
+        print_error "No deployment config found for app '${APP_SLUG}'. Run 'deployr deploy --app ${APP_SLUG}' first."
         exit 1
     fi
 
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
+    # Also load server config for PHP_VERSION
+    [ -f "$SERVER_CONF" ] && source "$SERVER_CONF"
 
     local releases_dir="${BASE_PATH}/releases"
     local current_link="${BASE_PATH}/current"
@@ -56,7 +60,7 @@ rollback_command() {
     local previous_ts
     previous_ts=$(basename "$previous_release")
 
-    print_header "Rollback"
+    print_header "Rollback — ${APP_SLUG}"
     echo -e "  ${RED}Current (rolling back from):${NC}  $current_ts"
     echo -e "  ${GREEN}Previous (rolling back to):${NC}   $previous_ts"
     echo ""
@@ -84,9 +88,9 @@ rollback_command() {
         print_success "PHP-FPM reloaded."
     fi
 
-    # Restart Supervisor workers pointing at the new current
+    # Restart this app's Supervisor workers
     if command -v supervisorctl &>/dev/null; then
-        supervisorctl restart "laravel-worker:*" 2>/dev/null || true
+        supervisorctl restart "laravel-${APP_SLUG}-worker:*" 2>/dev/null || true
         print_success "Queue workers restarted."
     fi
 

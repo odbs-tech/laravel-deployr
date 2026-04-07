@@ -10,38 +10,33 @@ source "${DEPLOYR_ROOT}/lib/core.sh"
 
 _show_help() {
     echo ""
-    echo -e "${BOLD}Usage:${NC}  sudo deployr <command> [options]"
+    echo -e "${BOLD}Usage:${NC}  sudo deployr <command> [--app <name>] [options]"
     echo ""
     echo -e "${BOLD}Commands:${NC}"
     echo "  deploy     Provision server and deploy the application"
     echo "  rollback   Roll back to the previous release"
     echo "  upgrade    Upgrade system packages and PHP stack"
-    echo "  status     Show service and release status"
+    echo "  status     Show service and release status (all apps or --app)"
+    echo "  install    Install deployr to /usr/local/bin (run once)"
     echo ""
     echo -e "${BOLD}Options:${NC}"
+    echo "  --app <name>         Target a specific application (required for multi-site)"
     echo "  --non-interactive    Read all values from environment variables (CI/CD)"
-    echo "  --dry-run            Print steps without executing (not yet implemented per-step)"
+    echo "  --dry-run            Print steps without executing"
     echo "  --help, -h           Show this help message"
     echo ""
+    echo -e "${BOLD}Multi-site examples:${NC}"
+    echo "  sudo deployr deploy --app myapp"
+    echo "  sudo deployr deploy --app blog"
+    echo "  sudo deployr rollback --app myapp"
+    echo "  sudo deployr status               # lists all apps"
+    echo "  sudo deployr status --app myapp   # single app detail"
+    echo ""
     echo -e "${BOLD}Environment variables (for --non-interactive):${NC}"
-    echo "  APP_NAME            APP_ENV              DOMAIN"
-    echo "  SETUP_SSL           SSL_EMAIL"
-    echo "  DB_TYPE             DB_NAME              DB_USER"
-    echo "  DB_PASS             DB_REMOTE_ACCESS"
-    echo "  PHP_VERSION         BASE_PATH"
-    echo "  GIT_REPO            GIT_BRANCH"
-    echo "  WORKER_COUNT        SETUP_REDIS"
-    echo ""
-    echo -e "${BOLD}Examples:${NC}"
-    echo "  sudo deployr deploy"
-    echo "  sudo deployr rollback"
-    echo "  sudo deployr status"
-    echo ""
-    echo "  # Non-interactive (CI/CD):"
-    echo "  sudo APP_NAME=MyApp DOMAIN=api.example.com \\"
-    echo "       DB_TYPE=postgresql DB_NAME=mydb DB_USER=myuser DB_PASS=secret \\"
-    echo "       GIT_REPO=git@github.com:org/repo.git \\"
-    echo "       deployr deploy --non-interactive"
+    echo "  APP_NAME  DOMAIN  SETUP_SSL  SSL_EMAIL"
+    echo "  DB_TYPE   DB_NAME  DB_USER   DB_PASS   DB_REMOTE_ACCESS"
+    echo "  PHP_VERSION  BASE_PATH  GIT_REPO  GIT_BRANCH"
+    echo "  WORKER_COUNT  SETUP_REDIS  SETUP_NODEJS  NODE_VERSION  NPM_BUILD_CMD"
     echo ""
 }
 
@@ -51,29 +46,43 @@ _parse_args() {
     NON_INTERACTIVE=false
     DRY_RUN=false
     COMMAND=""
+    APP_SLUG=""
 
-    for arg in "$@"; do
+    local args=("$@")
+    local i=0
+    while [ "$i" -lt "${#args[@]}" ]; do
+        local arg="${args[$i]}"
         case "$arg" in
             --non-interactive) NON_INTERACTIVE=true ;;
             --dry-run)         DRY_RUN=true ;;
             --help|-h)         print_banner; _show_help; exit 0 ;;
-            deploy|rollback|upgrade|status)
+            --app)
+                i=$(( i + 1 ))
+                if [ "$i" -ge "${#args[@]}" ]; then
+                    print_error "--app requires a name argument."
+                    exit 1
+                fi
+                APP_SLUG="$(slugify "${args[$i]}")"
+                ;;
+            --app=*)
+                APP_SLUG="$(slugify "${arg#--app=}")"
+                ;;
+            deploy|rollback|upgrade|status|install)
                 if [ -n "$COMMAND" ]; then
                     print_error "Multiple commands specified. Use one at a time."
-                    _show_help
-                    exit 1
+                    _show_help; exit 1
                 fi
                 COMMAND="$arg"
                 ;;
             *)
                 print_error "Unknown argument: $arg"
-                _show_help
-                exit 1
+                _show_help; exit 1
                 ;;
         esac
+        i=$(( i + 1 ))
     done
 
-    export NON_INTERACTIVE DRY_RUN
+    export NON_INTERACTIVE DRY_RUN APP_SLUG
 }
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
@@ -84,9 +93,17 @@ main() {
     print_banner
 
     if [ -z "$COMMAND" ]; then
-        _show_help
-        exit 1
+        _show_help; exit 1
     fi
+
+    # For app-scoped commands, resolve slug before loading config
+    case "$COMMAND" in
+        deploy|rollback|status)
+            if [ -z "$APP_SLUG" ]; then
+                auto_select_app
+            fi
+            ;;
+    esac
 
     case "$COMMAND" in
         deploy)
@@ -108,6 +125,11 @@ main() {
             # shellcheck source=lib/commands/status.sh
             source "${DEPLOYR_ROOT}/lib/commands/status.sh"
             status_command
+            ;;
+        install)
+            # shellcheck source=lib/commands/install.sh
+            source "${DEPLOYR_ROOT}/lib/commands/install.sh"
+            install_command
             ;;
     esac
 }

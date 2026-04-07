@@ -18,15 +18,20 @@ upgrade_command() {
         print_success "Composer: $(composer --version)"
     fi
 
-    if [ -f "$CONFIG_FILE" ]; then
+    if [ -f "$SERVER_CONF" ]; then
         # shellcheck source=/dev/null
-        source "$CONFIG_FILE"
-        local php_ver="${PHP_VERSION:-8.4}"
+        source "$SERVER_CONF"
 
-        local fpm_service="php${php_ver}-fpm"
-        if systemctl is-active --quiet "$fpm_service"; then
-            systemctl restart "$fpm_service"
-            print_success "PHP-FPM ($php_ver) restarted."
+        # Restart FPM for every installed PHP version
+        local installed="${INSTALLED_PHP_VERSIONS:-}"
+        if [ -n "$installed" ]; then
+            for ver in $installed; do
+                local fpm_service="php${ver}-fpm"
+                if systemctl is-active --quiet "$fpm_service"; then
+                    systemctl restart "$fpm_service"
+                    print_success "PHP-FPM ($ver) restarted."
+                fi
+            done
         fi
     fi
 

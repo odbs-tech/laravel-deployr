@@ -1,7 +1,6 @@
 #!/bin/bash
 # deploy.sh — Provision server (once) then deploy with releases structure
 
-# Source all dependencies relative to the deployr root
 _load_deploy_deps() {
     local root="$DEPLOYR_ROOT"
     # shellcheck source=../validate.sh
@@ -22,6 +21,8 @@ _load_deploy_deps() {
     source "${root}/lib/steps/07_database.sh"
     # shellcheck source=../steps/08_redis.sh
     source "${root}/lib/steps/08_redis.sh"
+    # shellcheck source=../steps/11_nodejs.sh
+    source "${root}/lib/steps/11_nodejs.sh"
     # shellcheck source=../steps/09_vhost.sh
     source "${root}/lib/steps/09_vhost.sh"
     # shellcheck source=../steps/10_workers.sh
@@ -43,6 +44,19 @@ deploy_command() {
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 _load_or_ask_config() {
+    # Load server-level config (PHP version, Redis, provisioning state)
+    if [ -f "$SERVER_CONF" ]; then
+        # shellcheck source=/dev/null
+        source "$SERVER_CONF"
+    fi
+
+    # If APP_SLUG not set yet, ask for app name first so we can set the slug
+    if [ -z "$APP_SLUG" ]; then
+        _ask_app_name_only
+    fi
+
+    resolve_config_file
+
     if [ -f "$CONFIG_FILE" ]; then
         # shellcheck source=/dev/null
         source "$CONFIG_FILE"
@@ -50,7 +64,7 @@ _load_or_ask_config() {
 
         if [ "${CURRENT_STEP}" -gt 0 ] && [ "${NON_INTERACTIVE:-false}" != "true" ]; then
             echo ""
-            print_warning "Previous state found — completed up to step $CURRENT_STEP: ${STEP_NAMES[$CURRENT_STEP]:-unknown}"
+            print_warning "Previous state for '${APP_SLUG}' — completed up to step $CURRENT_STEP: ${STEP_NAMES[$CURRENT_STEP]:-unknown}"
             echo ""
             echo -e "  ${YELLOW}1)${NC} Resume from step $((CURRENT_STEP + 1))"
             echo -e "  ${YELLOW}2)${NC} Start fresh (re-ask all questions)"
@@ -59,11 +73,10 @@ _load_or_ask_config() {
 
             if [ "$RESUME_CHOICE" != "1" ]; then
                 CURRENT_STEP=0
-                PROVISIONED=false
                 rm -f "$CONFIG_FILE"
                 _ask_configuration
             else
-                print_success "Resuming from step $((CURRENT_STEP + 1))"
+                print_success "Resuming '${APP_SLUG}' from step $((CURRENT_STEP + 1))"
                 _show_loaded_config
             fi
         elif [ "${CURRENT_STEP}" -eq 0 ]; then
@@ -74,10 +87,33 @@ _load_or_ask_config() {
     fi
 }
 
-_ask_configuration() {
-    print_header "Configuration"
+_ask_app_name_only() {
+    if [ "${NON_INTERACTIVE:-false}" = "true" ]; then
+        if [ -z "${APP_NAME:-}" ]; then
+            print_error "APP_NAME must be set in non-interactive mode."
+            exit 1
+        fi
+        APP_SLUG="$(slugify "$APP_NAME")"
+        export APP_SLUG
+        return
+    fi
 
     ask "Application name" "Laravel" APP_NAME
+    APP_SLUG="$(slugify "$APP_NAME")"
+    export APP_SLUG
+    print_info "App slug: ${APP_SLUG}"
+}
+
+_ask_configuration() {
+    print_header "Configuration — ${APP_SLUG}"
+
+    # APP_NAME may already be set if _ask_app_name_only ran
+    if [ -z "${APP_NAME:-}" ]; then
+        ask "Application name" "Laravel" APP_NAME
+        APP_SLUG="$(slugify "$APP_NAME")"
+        export APP_SLUG
+        resolve_config_file
+    fi
 
     ask "Domain name (e.g. api.example.com)" "" DOMAIN
     while [ -z "$DOMAIN" ]; do
@@ -115,6 +151,7 @@ _ask_configuration() {
     ask_yes_no "Enable remote database access?" "n" DB_REMOTE_ACCESS
 
     echo ""
+    # PHP version is per-app — each app can use a different version
     ask "PHP version" "8.4" PHP_VERSION
     ask "Project base directory" "/var/www/${DOMAIN}" BASE_PATH
 
@@ -123,20 +160,37 @@ _ask_configuration() {
     ask "Git branch" "main" GIT_BRANCH
 
     ask "Supervisor worker count" "8" WORKER_COUNT
-    ask_yes_no "Install Redis?" "y" SETUP_REDIS
-    REDIS_HOST="127.0.0.1"
-    REDIS_PORT="6379"
+
+    # Server-level options (asked only if server not yet provisioned)
+    if [ "${SERVER_PROVISIONED:-false}" != "true" ]; then
+        ask_yes_no "Install Redis?" "y" SETUP_REDIS
+        REDIS_HOST="127.0.0.1"
+        REDIS_PORT="6379"
+
+        ask_yes_no "Install Node.js?" "n" SETUP_NODEJS
+        if [ "$SETUP_NODEJS" = "true" ]; then
+            ask "Node.js version" "20" NODE_VERSION
+        fi
+    fi
+
+    ask_yes_no "Run npm build after deploy?" "n" RUN_NPM_BUILD
+    if [ "$RUN_NPM_BUILD" = "true" ]; then
+        ask "npm build command" "npm run build" NPM_BUILD_CMD
+    else
+        NPM_BUILD_CMD=""
+    fi
 
     _print_config_summary
     ask_yes_no "Proceed with installation?" "y" PROCEED
     [ "$PROCEED" = "false" ] && { echo "Installation cancelled."; exit 0; }
 
-    save_config
+    save_app_config
+    save_server_config
     print_success "Configuration saved."
 }
 
 _print_config_summary() {
-    print_header "Configuration Summary"
+    print_header "Configuration Summary — ${APP_SLUG}"
     echo -e "  App Name:    ${GREEN}$APP_NAME${NC}"
     echo -e "  Domain:      ${GREEN}$DOMAIN${NC}"
     echo -e "  SSL:         ${GREEN}$SETUP_SSL${NC}"
@@ -145,7 +199,9 @@ _print_config_summary() {
     echo -e "  Base Dir:    ${GREEN}$BASE_PATH${NC}"
     echo -e "  Git:         ${GREEN}$GIT_REPO ($GIT_BRANCH)${NC}"
     echo -e "  Workers:     ${GREEN}$WORKER_COUNT${NC}"
-    echo -e "  Redis:       ${GREEN}$SETUP_REDIS${NC}"
+    echo -e "  Redis:       ${GREEN}${SETUP_REDIS:-false}${NC}"
+    echo -e "  Node.js:     ${GREEN}${SETUP_NODEJS:-false}${NC}"
+    [ -n "${NPM_BUILD_CMD:-}" ] && echo -e "  npm build:   ${GREEN}$NPM_BUILD_CMD${NC}"
     echo ""
 }
 
@@ -162,24 +218,47 @@ _show_loaded_config() {
 # ─── Provisioning ─────────────────────────────────────────────────────────────
 
 _run_provisioning() {
-    if [ "${PROVISIONED:-false}" = "true" ]; then
+    # ── Global infrastructure (runs once per server) ───────────────────────
+    if [ "${SERVER_PROVISIONED:-false}" != "true" ]; then
+        should_run 1  && step_system_update
+        should_run 2  && step_essential_packages
+        should_run 3  && step_nginx
+        should_run 4  && step_firewall
+        should_run 5  && step_ssh_key
+        should_run 6  && step_php        # also calls register_php_version
+        should_run 7  && step_composer
+        should_run 8  && step_database
+        should_run 9  && step_redis
+        should_run 10 && step_nodejs
+
+        SERVER_PROVISIONED=true
+        save_server_config
+        print_success "Server infrastructure provisioned."
+    else
         print_info "Server already provisioned — skipping infrastructure setup."
+    fi
+
+    # ── PHP (per-version — runs whenever a new version is requested) ───────
+    _ensure_php_version
+}
+
+# Install the app's requested PHP version if not already on this server.
+# This is called for every deploy so that adding a second app with a
+# different PHP version "just works" without touching the other app.
+_ensure_php_version() {
+    local ver="${PHP_VERSION:-8.4}"
+
+    if php_version_is_installed "$ver"; then
+        print_info "PHP $ver already installed — skipping."
         return
     fi
 
-    should_run 1  && step_system_update
-    should_run 2  && step_essential_packages
-    should_run 3  && step_nginx
-    should_run 4  && step_firewall
-    should_run 5  && step_ssh_key
-    should_run 6  && step_php
-    should_run 7  && step_composer
-    should_run 8  && step_database
-    should_run 9  && step_redis
+    print_header "Installing PHP $ver"
+    _install_php_for_version "$ver"
 
-    PROVISIONED=true
-    save_config
-    print_success "Server provisioning complete."
+    # Mark this version as installed on the server
+    register_php_version "$ver"
+    print_success "PHP $ver registered in server config."
 }
 
 # ─── Release Deploy ───────────────────────────────────────────────────────────
@@ -191,7 +270,7 @@ _run_release_deploy() {
     local shared_dir="${BASE_PATH}/shared"
     local current_link="${BASE_PATH}/current"
 
-    print_header "Deploying Release: $timestamp"
+    print_header "Deploying ${APP_SLUG} — Release: $timestamp"
 
     # Prepare shared directory tree (idempotent)
     mkdir -p \
@@ -221,8 +300,19 @@ _run_release_deploy() {
     cd "$release_dir"
     composer install --no-dev --optimize-autoloader --no-interaction
 
+    # Node.js / npm build (optional)
+    if [ -n "${NPM_BUILD_CMD:-}" ]; then
+        print_info "Running npm ci..."
+        npm ci --prefix "$release_dir"
+        print_info "Running: $NPM_BUILD_CMD"
+        cd "$release_dir"
+        eval "$NPM_BUILD_CMD"
+        cd - >/dev/null
+    fi
+
     # Laravel build steps
     print_info "Building Laravel caches..."
+    cd "$release_dir"
     php artisan config:cache
     php artisan route:cache
     php artisan view:cache
@@ -244,25 +334,75 @@ _run_release_deploy() {
         systemctl reload nginx
     fi
     local fpm_service="php${PHP_VERSION}-fpm"
-    systemctl is-active --quiet "$fpm_service" && systemctl reload "$fpm_service" 2>/dev/null || true
+    systemctl is-active --quiet "$fpm_service" \
+        && systemctl reload "$fpm_service" 2>/dev/null || true
 
-    # First-time infrastructure config
+    # First-time app infrastructure config
     if ! [ -f "/etc/nginx/sites-available/${DOMAIN}" ]; then
         step_nginx_vhost
     fi
-    should_run 11 && step_ssl
-    should_run 12 && step_supervisor
-    should_run 13 && step_scheduler
+    should_run 12 && step_ssl
+    should_run 13 && step_supervisor_for_app
+    should_run 14 && step_scheduler_for_app
 
     # Clean up releases older than the latest 3
     _cleanup_old_releases "$BASE_PATH"
 
-    CURRENT_STEP=13
-    PROVISIONED=true
-    save_config
+    CURRENT_STEP=14
+    save_app_config
     rm -f "$CONFIG_FILE"
 
-    print_success "Release $timestamp deployed successfully."
+    print_success "Release $timestamp of '${APP_SLUG}' deployed successfully."
+}
+
+# Per-app Supervisor config (named after APP_SLUG so multiple apps don't collide)
+step_supervisor_for_app() {
+    print_header "Configuring Supervisor — ${APP_SLUG}"
+
+    apt-get install -y supervisor
+
+    local queue_driver="database"
+    [ "${SETUP_REDIS:-false}" = "true" ] && queue_driver="redis"
+
+    cat > "/etc/supervisor/conf.d/laravel-${APP_SLUG}-worker.conf" <<SUPEOF
+[program:laravel-${APP_SLUG}-worker]
+process_name=%(program_name)s_%(process_num)02d
+command=php ${BASE_PATH}/current/artisan queue:work ${queue_driver} --sleep=3 --tries=3 --max-time=3600
+autostart=true
+autorestart=true
+stopasgroup=true
+killasgroup=true
+user=www-data
+numprocs=${WORKER_COUNT}
+redirect_stderr=true
+stdout_logfile=/var/log/laravel-${APP_SLUG}-worker.log
+stopwaitsecs=3600
+SUPEOF
+
+    systemctl enable supervisor
+    systemctl start supervisor
+    supervisorctl reread
+    supervisorctl update
+    supervisorctl start "laravel-${APP_SLUG}-worker:*" 2>/dev/null || true
+
+    print_success "Supervisor configured: ${WORKER_COUNT} worker(s) for '${APP_SLUG}'."
+    complete_step 13
+}
+
+# Per-app scheduler cron entry
+step_scheduler_for_app() {
+    print_header "Scheduler Cron — ${APP_SLUG}"
+
+    local cron_cmd="* * * * * cd ${BASE_PATH}/current && php artisan schedule:run >> /dev/null 2>&1"
+
+    if crontab -u www-data -l 2>/dev/null | grep -qF "${BASE_PATH}/current"; then
+        print_warning "Scheduler cron for '${APP_SLUG}' already exists — skipping."
+    else
+        (crontab -u www-data -l 2>/dev/null; echo "$cron_cmd") | crontab -u www-data -
+        print_success "Scheduler cron added for '${APP_SLUG}'."
+    fi
+
+    complete_step 14
 }
 
 _create_env() {
@@ -279,7 +419,7 @@ _create_env() {
     fi
 
     # Only use redis drivers when Redis is actually installed
-    if [ "$SETUP_REDIS" = "true" ]; then
+    if [ "${SETUP_REDIS:-false}" = "true" ]; then
         cache_driver="redis"
         queue_connection="redis"
         session_driver="redis"
@@ -316,9 +456,9 @@ QUEUE_CONNECTION=${queue_connection}
 SESSION_DRIVER=${session_driver}
 SESSION_LIFETIME=120
 
-REDIS_HOST=${REDIS_HOST}
+REDIS_HOST=${REDIS_HOST:-127.0.0.1}
 REDIS_PASSWORD=null
-REDIS_PORT=${REDIS_PORT}
+REDIS_PORT=${REDIS_PORT:-6379}
 
 MAIL_MAILER=smtp
 MAIL_HOST=
@@ -359,7 +499,7 @@ _cleanup_old_releases() {
 # ─── Summary ──────────────────────────────────────────────────────────────────
 
 _print_deploy_summary() {
-    print_header "Deployment Complete!"
+    print_header "Deployment Complete — ${APP_SLUG}!"
 
     echo -e "  ${BOLD}URL:${NC}         https://${DOMAIN}"
     echo -e "  ${BOLD}Base Dir:${NC}    ${BASE_PATH}"
@@ -367,13 +507,15 @@ _print_deploy_summary() {
     echo -e "  ${BOLD}Database:${NC}    ${DB_TYPE} (${DB_NAME})"
     echo -e "  ${BOLD}PHP:${NC}         ${PHP_VERSION}"
     echo -e "  ${BOLD}SSL:${NC}         ${SETUP_SSL}"
-    echo -e "  ${BOLD}Redis:${NC}       ${SETUP_REDIS}"
+    echo -e "  ${BOLD}Redis:${NC}       ${SETUP_REDIS:-false}"
+    echo -e "  ${BOLD}Node.js:${NC}     ${SETUP_NODEJS:-false}"
     echo -e "  ${BOLD}Workers:${NC}     ${WORKER_COUNT}"
     echo ""
     echo -e "${YELLOW}Next steps:${NC}"
     echo -e "  1. Edit ${BASE_PATH}/shared/.env  (fill in Mail, AWS credentials)"
     echo -e "  2. Logs: tail -f ${BASE_PATH}/shared/storage/logs/laravel.log"
     echo -e "  3. Workers: supervisorctl status"
-    echo -e "  4. Rollback: sudo deployr rollback"
+    echo -e "  4. Rollback: sudo deployr rollback --app ${APP_SLUG}"
+    echo -e "  5. Status:   sudo deployr status --app ${APP_SLUG}"
     echo ""
 }

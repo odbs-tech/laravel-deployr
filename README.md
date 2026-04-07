@@ -2,26 +2,29 @@
 
 ![CI](https://github.com/odbs/laravel-deployr/actions/workflows/ci.yml/badge.svg)
 
-> Zero-downtime Laravel server provisioner and deployer for Ubuntu / Debian.
+> Zero-downtime Laravel server provisioner and deployer for Ubuntu / Debian.  
+> Supports multiple applications on the same server.
 
-One command transforms a fresh VPS into a fully configured Laravel production stack — with **Nginx, PHP-FPM, PostgreSQL or MySQL, Redis, Supervisor queue workers, Let's Encrypt SSL** — and deploys your application with **atomic release switching** so there is never a moment of downtime.
+One command transforms a fresh VPS into a fully configured Laravel production stack — **Nginx, PHP-FPM with Opcache, PostgreSQL or MySQL, Redis, optional Node.js/npm build, Supervisor queue workers, Let's Encrypt SSL** — and deploys with **atomic release switching** so there is never a moment of downtime.
 
 ---
 
-## Installation
+## Quick Start
 
-Clone the repository to your server or workstation:
+### 1. Clone and install globally (recommended)
 
 ```bash
 git clone git@github.com:odbs/laravel-deployr.git
 cd laravel-deployr
-sudo chmod +x deployr
+sudo deployr install          # copies to /opt/deployr, links to /usr/local/bin
 ```
 
-Or run directly with curl:
+After `install`, use `deployr` from any directory without the git repo.
+
+### 2. Run directly from the repo
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/odbs/laravel-deployr/main/deployr | sudo bash -s deploy
+sudo ./deployr deploy --app myapp
 ```
 
 ---
@@ -29,41 +32,76 @@ curl -fsSL https://raw.githubusercontent.com/odbs/laravel-deployr/main/deployr |
 ## Commands
 
 ```
-sudo deployr <command> [options]
+sudo deployr <command> [--app <name>] [options]
 
 Commands:
-  deploy     Provision the server (once) and deploy the application
-  rollback   Roll back to the previous release in seconds
+  deploy     Provision server (once) and deploy the application
+  rollback   Roll back to the previous release
   upgrade    Upgrade system packages, Composer, PHP-FPM, and Nginx
-  status     Show service health, release list, and deployment info
+  status     Show service health and release list
+  install    Install deployr to /usr/local/bin (run once)
 
 Options:
+  --app <name>         Target app (required when multiple apps are deployed)
   --non-interactive    Read all values from environment variables (CI/CD)
   --dry-run            List steps without executing
-  --help, -h           Show help
+  --help, -h           Show this help
 ```
+
+---
+
+## Multi-site Support
+
+Multiple Laravel applications can run on the same server. Each app has its own domain, database, releases, and queue workers. Server infrastructure (Nginx, PHP, Redis) is shared and provisioned only once.
+
+```bash
+# Deploy two apps on one server
+sudo deployr deploy --app api
+sudo deployr deploy --app blog
+
+# Target a specific app
+sudo deployr rollback --app api
+sudo deployr status --app blog
+
+# Overview of all apps
+sudo deployr status
+```
+
+App configs are stored separately:
+```
+/root/.laravel-deployr/
+├── .server.conf    ← server-level (PHP version, Redis, Node.js state)
+├── api.conf        ← app-specific (domain, DB, git, deploy state)
+└── blog.conf
+```
+
+---
+
+## Commands Detail
 
 ### `deploy`
 
-Provisions the server infrastructure on the **first run** (system packages, Nginx, PHP, database, Redis, firewall), then deploys the application into a timestamped release directory and switches Nginx to it atomically.
+Provisions the server infrastructure on the **first run** (system packages, Nginx, PHP+Opcache, DB, Redis, optional Node.js, firewall), then deploys the application as a new release.
+
+Subsequent calls skip provisioning and only create a new release.
 
 ```bash
-sudo deployr deploy
+sudo deployr deploy --app myapp
 ```
-
-On every subsequent call the infrastructure is skipped; only a new release is created and the `current` symlink is switched.
 
 ### `rollback`
 
-Switches the `current` symlink back to the previous release. Asks whether to also run `artisan migrate:rollback` and delete the bad release.
+Switches the `current` symlink back to the previous release in seconds.
 
 ```bash
-sudo deployr rollback
+sudo deployr rollback --app myapp
 ```
+
+Optionally runs `artisan migrate:rollback` and deletes the bad release.
 
 ### `upgrade`
 
-Runs `apt-get upgrade`, updates Composer, and gracefully restarts PHP-FPM, Nginx, Redis, and Supervisor.
+Upgrades system packages, Composer, PHP-FPM, Nginx, Redis, and Supervisor.
 
 ```bash
 sudo deployr upgrade
@@ -71,41 +109,51 @@ sudo deployr upgrade
 
 ### `status`
 
-Displays service health, the list of available releases (with the current one highlighted), disk usage, and deployment details.
+No `--app`: prints an overview table of all deployed apps plus service health.  
+With `--app`: shows detailed release list, workers, and deployment info for one app.
 
 ```bash
 sudo deployr status
+sudo deployr status --app myapp
+```
+
+### `install`
+
+Copies deployr to `/opt/deployr/` and creates a `/usr/local/bin/deployr` symlink so you can run `deployr` from anywhere without the source repo.
+
+```bash
+sudo deployr install
 ```
 
 ---
 
 ## Configuration Prompts
 
-On first run `deployr deploy` asks the following questions interactively:
+On first `deploy` the following questions are asked interactively:
 
 | Prompt | Example | Notes |
 |--------|---------|-------|
-| Application name | `MyApp` | Used in `.env` |
+| Application name | `MyApp` | Used in `.env` and as app slug |
 | Domain name | `api.example.com` | DNS must point to this server |
 | Setup SSL? | `y` | Let's Encrypt via Certbot |
 | SSL email | `you@example.com` | Required for SSL |
 | Database | `1` (PostgreSQL) / `2` (MySQL) | |
-| Database name | `mydb` | |
-| Database username | `myuser` | |
-| Database password | _(hidden)_ | |
+| Database name / user / password | | |
 | Remote DB access? | `n` | Opens port 3306 / 5432 via UFW |
-| PHP version | `8.4` | Uses sury.org on Debian, ondrej/php on Ubuntu |
+| PHP version | `8.4` | Ondrej PPA (Ubuntu) / sury.org (Debian) |
 | Base directory | `/var/www/api.example.com` | Holds `releases/`, `shared/`, `current` |
 | Git SSH repo URL | `git@github.com:org/repo.git` | |
 | Git branch | `main` | |
 | Worker count | `8` | Supervisor processes |
-| Install Redis? | `y` | |
+| Install Redis? | `y` | *(asked once per server)* |
+| Install Node.js? | `n` | *(asked once per server)* |
+| Node.js version | `20` | *(if Node.js selected)* |
+| Run npm build? | `n` | Per-app npm build step |
+| npm build command | `npm run build` | *(if npm build selected)* |
 
 ---
 
 ## Non-Interactive Mode (CI/CD)
-
-Pass all values as environment variables and add `--non-interactive`:
 
 ```bash
 sudo \
@@ -124,14 +172,17 @@ sudo \
   GIT_BRANCH="main" \
   WORKER_COUNT="8" \
   SETUP_REDIS="true" \
-  deployr deploy --non-interactive
+  SETUP_NODEJS="true" \
+  NODE_VERSION="20" \
+  NPM_BUILD_CMD="npm run build" \
+  deployr deploy --app myapp --non-interactive
 ```
 
 ---
 
 ## Releases Structure
 
-Every deploy creates a **timestamped directory** inside `releases/`. Nginx always serves from the `current` symlink. Switching between releases is atomic — there is no window where a partial deploy is visible.
+Every deploy creates a **timestamped directory**. Nginx always serves from the `current` symlink — switching is atomic with zero downtime.
 
 ```
 /var/www/api.example.com/
@@ -141,10 +192,34 @@ Every deploy creates a **timestamped directory** inside `releases/`. Nginx alway
 ├── shared/
 │   ├── .env                ← shared across all releases
 │   └── storage/            ← logs, cache, uploads
-└── current -> releases/20260407_153022   (Nginx serves from here)
+└── current -> releases/20260407_153022
 ```
 
-The last **3 releases** are kept automatically; older ones are deleted.
+The last **3 releases** are kept; older ones are deleted automatically.
+
+---
+
+## PHP Opcache
+
+Production-optimised Opcache settings are written to:
+```
+/etc/php/<version>/fpm/conf.d/99-laravel-opcache.ini
+```
+
+Key settings: `validate_timestamps=0` (max performance — PHP-FPM restart not needed between deploys since each release gets a new FPM reload via the deploy step).
+
+---
+
+## Node.js / npm Build
+
+When `SETUP_NODEJS=true`, Node.js is installed via NodeSource during provisioning. If `NPM_BUILD_CMD` is set for an app, the release deploy runs:
+
+```bash
+npm ci            # install exact lockfile dependencies
+npm run build     # (or your custom command)
+```
+
+before Laravel caching and migrations.
 
 ---
 
@@ -166,13 +241,13 @@ nano /var/www/<domain>/shared/.env
 # Tail application logs
 tail -f /var/www/<domain>/shared/storage/logs/laravel.log
 
-# Check queue workers
+# Check all queue workers
 supervisorctl status
 
 # Roll back if something went wrong
-sudo deployr rollback
+sudo deployr rollback --app <name>
 
-# Check overall health
+# Full status overview
 sudo deployr status
 ```
 
@@ -184,24 +259,26 @@ sudo deployr status
 laravel-deployr/
 ├── deployr                     # CLI entrypoint
 ├── lib/
-│   ├── core.sh                 # Colors, logging, ask*, save_config
+│   ├── core.sh                 # Colors, logging, ask*, config helpers
 │   ├── validate.sh             # OS detection, disk/DNS checks
 │   ├── steps/
 │   │   ├── 01_system.sh        # System update + essential packages
 │   │   ├── 02_nginx.sh         # Nginx install
 │   │   ├── 03_firewall.sh      # UFW rules
 │   │   ├── 04_ssh_key.sh       # SSH deploy key generation
-│   │   ├── 05_php.sh           # PHP-FPM (Ubuntu PPA / Debian sury.org)
+│   │   ├── 05_php.sh           # PHP-FPM + Opcache
 │   │   ├── 06_composer.sh      # Composer
 │   │   ├── 07_database.sh      # MySQL or PostgreSQL
 │   │   ├── 08_redis.sh         # Redis (optional)
 │   │   ├── 09_vhost.sh         # Nginx vhost + SSL
-│   │   └── 10_workers.sh       # Supervisor + scheduler cron
+│   │   ├── 10_workers.sh       # Supervisor + scheduler cron
+│   │   └── 11_nodejs.sh        # Node.js via NodeSource (optional)
 │   └── commands/
 │       ├── deploy.sh           # Full provision + release deploy
 │       ├── rollback.sh         # Atomic rollback
 │       ├── upgrade.sh          # Stack upgrade
-│       └── status.sh           # Health dashboard
+│       ├── status.sh           # Health dashboard (single app or all)
+│       └── install.sh          # Self-install to /usr/local/bin
 ├── tests/
 │   └── unit/
 │       ├── test_core.bats
@@ -218,28 +295,18 @@ laravel-deployr/
 ### Running Tests Locally
 
 ```bash
-# Install BATS
 git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
 sudo /tmp/bats-core/install.sh /usr/local
-
-# Run tests
 bats tests/unit/
 ```
 
 ### Linting
 
 ```bash
-# Install ShellCheck
 sudo apt-get install -y shellcheck
-
-# Lint all scripts
-shellcheck -S warning deployr setup.sh
+shellcheck -S warning deployr
 find lib/ -name "*.sh" -print0 | xargs -0 shellcheck -S warning
 ```
-
-### CI
-
-GitHub Actions runs ShellCheck and BATS on every push and pull request to `main`. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ---
 
