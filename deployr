@@ -1,0 +1,115 @@
+#!/bin/bash
+set -euo pipefail
+
+DEPLOYR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/core.sh
+source "${DEPLOYR_ROOT}/lib/core.sh"
+
+# ─── Help ─────────────────────────────────────────────────────────────────────
+
+_show_help() {
+    echo ""
+    echo -e "${BOLD}Usage:${NC}  sudo deployr <command> [options]"
+    echo ""
+    echo -e "${BOLD}Commands:${NC}"
+    echo "  deploy     Provision server and deploy the application"
+    echo "  rollback   Roll back to the previous release"
+    echo "  upgrade    Upgrade system packages and PHP stack"
+    echo "  status     Show service and release status"
+    echo ""
+    echo -e "${BOLD}Options:${NC}"
+    echo "  --non-interactive    Read all values from environment variables (CI/CD)"
+    echo "  --dry-run            Print steps without executing (not yet implemented per-step)"
+    echo "  --help, -h           Show this help message"
+    echo ""
+    echo -e "${BOLD}Environment variables (for --non-interactive):${NC}"
+    echo "  APP_NAME            APP_ENV              DOMAIN"
+    echo "  SETUP_SSL           SSL_EMAIL"
+    echo "  DB_TYPE             DB_NAME              DB_USER"
+    echo "  DB_PASS             DB_REMOTE_ACCESS"
+    echo "  PHP_VERSION         BASE_PATH"
+    echo "  GIT_REPO            GIT_BRANCH"
+    echo "  WORKER_COUNT        SETUP_REDIS"
+    echo ""
+    echo -e "${BOLD}Examples:${NC}"
+    echo "  sudo deployr deploy"
+    echo "  sudo deployr rollback"
+    echo "  sudo deployr status"
+    echo ""
+    echo "  # Non-interactive (CI/CD):"
+    echo "  sudo APP_NAME=MyApp DOMAIN=api.example.com \\"
+    echo "       DB_TYPE=postgresql DB_NAME=mydb DB_USER=myuser DB_PASS=secret \\"
+    echo "       GIT_REPO=git@github.com:org/repo.git \\"
+    echo "       deployr deploy --non-interactive"
+    echo ""
+}
+
+# ─── Argument Parsing ─────────────────────────────────────────────────────────
+
+_parse_args() {
+    NON_INTERACTIVE=false
+    DRY_RUN=false
+    COMMAND=""
+
+    for arg in "$@"; do
+        case "$arg" in
+            --non-interactive) NON_INTERACTIVE=true ;;
+            --dry-run)         DRY_RUN=true ;;
+            --help|-h)         print_banner; _show_help; exit 0 ;;
+            deploy|rollback|upgrade|status)
+                if [ -n "$COMMAND" ]; then
+                    print_error "Multiple commands specified. Use one at a time."
+                    _show_help
+                    exit 1
+                fi
+                COMMAND="$arg"
+                ;;
+            *)
+                print_error "Unknown argument: $arg"
+                _show_help
+                exit 1
+                ;;
+        esac
+    done
+
+    export NON_INTERACTIVE DRY_RUN
+}
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+main() {
+    _parse_args "$@"
+
+    print_banner
+
+    if [ -z "$COMMAND" ]; then
+        _show_help
+        exit 1
+    fi
+
+    case "$COMMAND" in
+        deploy)
+            # shellcheck source=lib/commands/deploy.sh
+            source "${DEPLOYR_ROOT}/lib/commands/deploy.sh"
+            deploy_command
+            ;;
+        rollback)
+            # shellcheck source=lib/commands/rollback.sh
+            source "${DEPLOYR_ROOT}/lib/commands/rollback.sh"
+            rollback_command
+            ;;
+        upgrade)
+            # shellcheck source=lib/commands/upgrade.sh
+            source "${DEPLOYR_ROOT}/lib/commands/upgrade.sh"
+            upgrade_command
+            ;;
+        status)
+            # shellcheck source=lib/commands/status.sh
+            source "${DEPLOYR_ROOT}/lib/commands/status.sh"
+            status_command
+            ;;
+    esac
+}
+
+main "$@"

@@ -1,102 +1,248 @@
 # Laravel Deployr
 
-```
-  _                          _   ____             _
- | |    __ _ _ __ __ ___   _| | |  _ \  ___ _ __ | | ___  _   _ _ __
- | |   / _` | '__/ _` \ \ / / | | | | |/ _ \ '_ \| |/ _ \| | | | '__|
- | |__| (_| | | | (_| |\ V /| | | |_| |  __/ |_) | | (_) | |_| | |
- |_____\__,_|_|  \__,_| \_/ |_| |____/ \___| .__/|_|\___/ \__, |_|
-                                             |_|            |___/
-```
+![CI](https://github.com/odbs/laravel-deployr/actions/workflows/ci.yml/badge.svg)
 
-One-command interactive server provisioning for Laravel on Ubuntu/Debian. Answer the prompts, grab a coffee, come back to a production-ready server.
+> Zero-downtime Laravel server provisioner and deployer for Ubuntu / Debian.
 
-## Features
+One command transforms a fresh VPS into a fully configured Laravel production stack — with **Nginx, PHP-FPM, PostgreSQL or MySQL, Redis, Supervisor queue workers, Let's Encrypt SSL** — and deploys your application with **atomic release switching** so there is never a moment of downtime.
 
-- **Auto-detects** Ubuntu/Debian version
-- **Nginx** with PHP-FPM virtual host
-- **PHP** with all common Laravel extensions (configurable version)
-- **Composer** installed globally
-- **PostgreSQL or MySQL** — creates user, database, and optional remote access
-- **Redis** with systemd supervision
-- **SSH key generation** — displays public key and waits for GitHub setup
-- **Git clone** via SSH
-- **Let's Encrypt SSL** with auto-renewal
-- **Supervisor** queue workers (configurable process count)
-- **Laravel scheduler** cron (`schedule:run` every minute)
-- **UFW firewall** — SSH + HTTP/HTTPS + DB port (if remote)
-- **.env** auto-generated with random `APP_KEY`
+---
 
-## Usage
+## Installation
+
+Clone the repository to your server or workstation:
 
 ```bash
-curl -sO https://raw.githubusercontent.com/odbs-tech/laravel-deployr/main/setup.sh
-sudo bash setup.sh
+git clone git@github.com:odbs/laravel-deployr.git
+cd laravel-deployr
+sudo chmod +x deployr
 ```
 
-Or manually:
+Or run directly with curl:
 
 ```bash
-scp setup.sh root@your-server:/root/
-sudo bash setup.sh
+curl -fsSL https://raw.githubusercontent.com/odbs/laravel-deployr/main/deployr | sudo bash -s deploy
 ```
 
-## Prompts
+---
 
-| Prompt | Default | Notes |
+## Commands
+
+```
+sudo deployr <command> [options]
+
+Commands:
+  deploy     Provision the server (once) and deploy the application
+  rollback   Roll back to the previous release in seconds
+  upgrade    Upgrade system packages, Composer, PHP-FPM, and Nginx
+  status     Show service health, release list, and deployment info
+
+Options:
+  --non-interactive    Read all values from environment variables (CI/CD)
+  --dry-run            List steps without executing
+  --help, -h           Show help
+```
+
+### `deploy`
+
+Provisions the server infrastructure on the **first run** (system packages, Nginx, PHP, database, Redis, firewall), then deploys the application into a timestamped release directory and switches Nginx to it atomically.
+
+```bash
+sudo deployr deploy
+```
+
+On every subsequent call the infrastructure is skipped; only a new release is created and the `current` symlink is switched.
+
+### `rollback`
+
+Switches the `current` symlink back to the previous release. Asks whether to also run `artisan migrate:rollback` and delete the bad release.
+
+```bash
+sudo deployr rollback
+```
+
+### `upgrade`
+
+Runs `apt-get upgrade`, updates Composer, and gracefully restarts PHP-FPM, Nginx, Redis, and Supervisor.
+
+```bash
+sudo deployr upgrade
+```
+
+### `status`
+
+Displays service health, the list of available releases (with the current one highlighted), disk usage, and deployment details.
+
+```bash
+sudo deployr status
+```
+
+---
+
+## Configuration Prompts
+
+On first run `deployr deploy` asks the following questions interactively:
+
+| Prompt | Example | Notes |
 |--------|---------|-------|
-| App Name | `Laravel` | Used in `.env` |
-| Domain | — | e.g. `api.example.com` |
-| SSL | Yes | Requires domain pointed to server |
-| SSL Email | — | For Let's Encrypt |
-| Database | PostgreSQL | PostgreSQL or MySQL |
-| DB Name | — | |
-| DB User | — | |
-| DB Password | — | Hidden input |
-| DB Remote Access | No | Opens port + binds to `0.0.0.0` |
-| PHP Version | `8.4` | |
-| Project Dir | `/var/www/{domain}` | |
-| Git SSH URL | — | e.g. `git@github.com:user/repo.git` |
-| Git Branch | `main` | |
-| Worker Count | `8` | Supervisor processes |
-| Redis | Yes | |
+| Application name | `MyApp` | Used in `.env` |
+| Domain name | `api.example.com` | DNS must point to this server |
+| Setup SSL? | `y` | Let's Encrypt via Certbot |
+| SSL email | `you@example.com` | Required for SSL |
+| Database | `1` (PostgreSQL) / `2` (MySQL) | |
+| Database name | `mydb` | |
+| Database username | `myuser` | |
+| Database password | _(hidden)_ | |
+| Remote DB access? | `n` | Opens port 3306 / 5432 via UFW |
+| PHP version | `8.4` | Uses sury.org on Debian, ondrej/php on Ubuntu |
+| Base directory | `/var/www/api.example.com` | Holds `releases/`, `shared/`, `current` |
+| Git SSH repo URL | `git@github.com:org/repo.git` | |
+| Git branch | `main` | |
+| Worker count | `8` | Supervisor processes |
+| Install Redis? | `y` | |
+
+---
+
+## Non-Interactive Mode (CI/CD)
+
+Pass all values as environment variables and add `--non-interactive`:
+
+```bash
+sudo \
+  APP_NAME="MyApp" \
+  DOMAIN="api.example.com" \
+  SETUP_SSL="true" \
+  SSL_EMAIL="ops@example.com" \
+  DB_TYPE="postgresql" \
+  DB_NAME="mydb" \
+  DB_USER="myuser" \
+  DB_PASS="supersecret" \
+  DB_REMOTE_ACCESS="false" \
+  PHP_VERSION="8.4" \
+  BASE_PATH="/var/www/api.example.com" \
+  GIT_REPO="git@github.com:org/repo.git" \
+  GIT_BRANCH="main" \
+  WORKER_COUNT="8" \
+  SETUP_REDIS="true" \
+  deployr deploy --non-interactive
+```
+
+---
+
+## Releases Structure
+
+Every deploy creates a **timestamped directory** inside `releases/`. Nginx always serves from the `current` symlink. Switching between releases is atomic — there is no window where a partial deploy is visible.
+
+```
+/var/www/api.example.com/
+├── releases/
+│   ├── 20260401_090000/    ← previous (kept for rollback)
+│   └── 20260407_153022/    ← current release
+├── shared/
+│   ├── .env                ← shared across all releases
+│   └── storage/            ← logs, cache, uploads
+└── current -> releases/20260407_153022   (Nginx serves from here)
+```
+
+The last **3 releases** are kept automatically; older ones are deleted.
+
+---
 
 ## Requirements
 
 - Ubuntu 22.04+ or Debian 11+
-- Root access
-- Domain pointing to the server IP
+- Root / sudo access
+- DNS A record pointing to the server (required for SSL)
+- A GitHub SSH deploy key added to the repository
 
-## What Happens
+---
 
-1. System packages updated
-2. UFW firewall configured (SSH + Nginx Full)
-3. SSH key generated, you add it to GitHub
-4. Nginx, PHP, Composer installed
-5. Database installed and configured
-6. Redis installed (if selected)
-7. Project cloned via SSH
-8. `.env` generated with DB credentials and random `APP_KEY`
-9. `composer install`, cache, migrate
-10. File permissions set (`www-data`)
-11. Nginx virtual host configured
-12. SSL certificate obtained (if selected)
-13. Supervisor queue workers started
-14. Laravel scheduler cron added
-
-## After Setup
+## After Deployment
 
 ```bash
-# Check your .env and fill in remaining values (mail, AWS, etc.)
-nano /var/www/yourdomain/.env
+# Edit shared configuration
+nano /var/www/<domain>/shared/.env
 
-# View logs
-tail -f /var/www/yourdomain/storage/logs/laravel.log
+# Tail application logs
+tail -f /var/www/<domain>/shared/storage/logs/laravel.log
 
-# Monitor queue workers
+# Check queue workers
 supervisorctl status
+
+# Roll back if something went wrong
+sudo deployr rollback
+
+# Check overall health
+sudo deployr status
 ```
+
+---
+
+## Project Structure
+
+```
+laravel-deployr/
+├── deployr                     # CLI entrypoint
+├── lib/
+│   ├── core.sh                 # Colors, logging, ask*, save_config
+│   ├── validate.sh             # OS detection, disk/DNS checks
+│   ├── steps/
+│   │   ├── 01_system.sh        # System update + essential packages
+│   │   ├── 02_nginx.sh         # Nginx install
+│   │   ├── 03_firewall.sh      # UFW rules
+│   │   ├── 04_ssh_key.sh       # SSH deploy key generation
+│   │   ├── 05_php.sh           # PHP-FPM (Ubuntu PPA / Debian sury.org)
+│   │   ├── 06_composer.sh      # Composer
+│   │   ├── 07_database.sh      # MySQL or PostgreSQL
+│   │   ├── 08_redis.sh         # Redis (optional)
+│   │   ├── 09_vhost.sh         # Nginx vhost + SSL
+│   │   └── 10_workers.sh       # Supervisor + scheduler cron
+│   └── commands/
+│       ├── deploy.sh           # Full provision + release deploy
+│       ├── rollback.sh         # Atomic rollback
+│       ├── upgrade.sh          # Stack upgrade
+│       └── status.sh           # Health dashboard
+├── tests/
+│   └── unit/
+│       ├── test_core.bats
+│       └── test_validate.bats
+└── .github/
+    └── workflows/
+        └── ci.yml              # ShellCheck + BATS on push / PR
+```
+
+---
+
+## Development
+
+### Running Tests Locally
+
+```bash
+# Install BATS
+git clone --depth 1 https://github.com/bats-core/bats-core.git /tmp/bats-core
+sudo /tmp/bats-core/install.sh /usr/local
+
+# Run tests
+bats tests/unit/
+```
+
+### Linting
+
+```bash
+# Install ShellCheck
+sudo apt-get install -y shellcheck
+
+# Lint all scripts
+shellcheck -S warning deployr setup.sh
+find lib/ -name "*.sh" -print0 | xargs -0 shellcheck -S warning
+```
+
+### CI
+
+GitHub Actions runs ShellCheck and BATS on every push and pull request to `main`. See [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+---
 
 ## License
 
-MIT
+MIT — © 2026 ODBS Tech
