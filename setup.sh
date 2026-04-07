@@ -109,7 +109,8 @@ STEP_NAMES=(
     "Redis"
     "Git Clone"
     ".env File"
-    "Dependencies & Laravel Setup"
+    "Composer Install"
+    "Laravel Cache & Migrate"
     "File Permissions"
     "Nginx Virtual Host"
     "SSL Certificate"
@@ -301,7 +302,7 @@ fi
 # Step 1: System Update
 # ============================================================
 if should_run 1; then
-    print_header "Step 1/17 — Updating System"
+    print_header "Step 1/18 — Updating System"
     apt update && apt upgrade -y
     complete_step 1
 fi
@@ -310,7 +311,7 @@ fi
 # Step 2: Essential Packages
 # ============================================================
 if should_run 2; then
-    print_header "Step 2/17 — Installing Essential Packages"
+    print_header "Step 2/18 — Installing Essential Packages"
     apt install -y software-properties-common ca-certificates lsb-release apt-transport-https \
         curl wget git zip unzip ufw
     complete_step 2
@@ -320,7 +321,7 @@ fi
 # Step 3: Nginx Install
 # ============================================================
 if should_run 3; then
-    print_header "Step 3/17 — Installing Nginx"
+    print_header "Step 3/18 — Installing Nginx"
     apt install -y nginx
     systemctl enable nginx
     systemctl start nginx
@@ -331,7 +332,7 @@ fi
 # Step 4: Firewall
 # ============================================================
 if should_run 4; then
-    print_header "Step 4/17 — Configuring Firewall"
+    print_header "Step 4/18 — Configuring Firewall"
     ufw allow OpenSSH
     ufw allow 'Nginx Full'
     ufw --force enable
@@ -342,7 +343,7 @@ fi
 # Step 5: SSH Key for GitHub
 # ============================================================
 if should_run 5; then
-    print_header "Step 5/17 — Setting Up SSH Key for GitHub"
+    print_header "Step 5/18 — Setting Up SSH Key for GitHub"
 
     SSH_KEY_PATH="/root/.ssh/id_ed25519"
 
@@ -389,7 +390,7 @@ fi
 # Step 6: PHP
 # ============================================================
 if should_run 6; then
-    print_header "Step 6/17 — Installing PHP $PHP_VERSION"
+    print_header "Step 6/18 — Installing PHP $PHP_VERSION"
 
     LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
     apt update
@@ -420,7 +421,7 @@ fi
 # Step 7: Composer
 # ============================================================
 if should_run 7; then
-    print_header "Step 7/17 — Installing Composer"
+    print_header "Step 7/18 — Installing Composer"
     curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/bin --filename=composer
     print_success "Composer installed: $(composer --version)"
     complete_step 7
@@ -430,7 +431,7 @@ fi
 # Step 8: Database
 # ============================================================
 if should_run 8; then
-    print_header "Step 8/17 — Installing $DB_TYPE"
+    print_header "Step 8/18 — Installing $DB_TYPE"
 
     if [ "$DB_TYPE" = "mysql" ]; then
         apt install -y mysql-server
@@ -500,7 +501,7 @@ fi
 # ============================================================
 if should_run 9; then
     if [ "$SETUP_REDIS" = "true" ]; then
-        print_header "Step 9/17 — Installing Redis"
+        print_header "Step 9/18 — Installing Redis"
         apt install -y redis-server
 
         sed -i 's/^supervised no/supervised systemd/' /etc/redis/redis.conf
@@ -512,7 +513,7 @@ if should_run 9; then
         systemctl restart redis-server
         print_success "Redis installed and configured."
     else
-        print_header "Step 9/17 — Skipping Redis (not selected)"
+        print_header "Step 9/18 — Skipping Redis (not selected)"
     fi
     complete_step 9
 fi
@@ -521,7 +522,7 @@ fi
 # Step 10: Clone Project
 # ============================================================
 if should_run 10; then
-    print_header "Step 10/17 — Cloning Project"
+    print_header "Step 10/18 — Cloning Project"
 
     mkdir -p "$(dirname "$PROJECT_PATH")"
 
@@ -547,7 +548,7 @@ fi
 # Step 11: .env File
 # ============================================================
 if should_run 11; then
-    print_header "Step 11/17 — Creating .env File"
+    print_header "Step 11/18 — Creating .env File"
 
     if [ "$DB_TYPE" = "mysql" ]; then
         DB_CONNECTION="mysql"
@@ -607,40 +608,44 @@ ENVEOF
 fi
 
 # ============================================================
-# Step 12: Dependencies & Laravel Setup
+# Step 12: Composer Install
 # ============================================================
 if should_run 12; then
-    print_header "Step 12/17 — Installing Dependencies & Setting Up Laravel"
+    print_header "Step 12/18 — Installing Composer Dependencies"
     cd "$PROJECT_PATH"
-
     composer install --no-dev --optimize-autoloader
-    print_success "Composer dependencies installed."
-
-    php artisan config:cache
-    php artisan route:cache
-    php artisan view:cache
-    php artisan migrate --force
-
-    print_success "Laravel configured and migrated."
     complete_step 12
 fi
 
 # ============================================================
-# Step 13: File Permissions
+# Step 13: Laravel Cache & Migrate
 # ============================================================
 if should_run 13; then
-    print_header "Step 13/17 — Setting File Permissions"
-    chown -R www-data:www-data "$PROJECT_PATH"
-    chmod -R 775 "$PROJECT_PATH/storage"
-    chmod -R 775 "$PROJECT_PATH/bootstrap/cache"
+    print_header "Step 13/18 — Laravel Cache & Migrate"
+    cd "$PROJECT_PATH"
+    php artisan config:cache
+    php artisan route:cache
+    php artisan view:cache
+    php artisan migrate --force
     complete_step 13
 fi
 
 # ============================================================
-# Step 14: Nginx Virtual Host
+# Step 14: File Permissions
 # ============================================================
 if should_run 14; then
-    print_header "Step 14/17 — Configuring Nginx Virtual Host"
+    print_header "Step 14/18 — Setting File Permissions"
+    chown -R www-data:www-data "$PROJECT_PATH"
+    chmod -R 775 "$PROJECT_PATH/storage"
+    chmod -R 775 "$PROJECT_PATH/bootstrap/cache"
+    complete_step 14
+fi
+
+# ============================================================
+# Step 15: Nginx Virtual Host
+# ============================================================
+if should_run 15; then
+    print_header "Step 15/18 — Configuring Nginx Virtual Host"
 
     cat > "/etc/nginx/sites-available/${DOMAIN}" <<NGINXEOF
 server {
@@ -681,15 +686,15 @@ NGINXEOF
     ln -sf "/etc/nginx/sites-available/${DOMAIN}" "/etc/nginx/sites-enabled/${DOMAIN}"
     rm -f /etc/nginx/sites-enabled/default
     nginx -t && systemctl reload nginx
-    complete_step 14
+    complete_step 15
 fi
 
 # ============================================================
-# Step 15: SSL
+# Step 16: SSL
 # ============================================================
-if should_run 15; then
+if should_run 16; then
     if [ "$SETUP_SSL" = "true" ]; then
-        print_header "Step 15/17 — Installing SSL Certificate"
+        print_header "Step 16/18 — Installing SSL Certificate"
         apt install -y certbot python3-certbot-nginx
         certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$SSL_EMAIL" --redirect
         print_success "SSL certificate installed."
@@ -699,16 +704,16 @@ if should_run 15; then
             print_success "SSL auto-renewal cron added."
         fi
     else
-        print_header "Step 15/17 — Skipping SSL (not selected)"
+        print_header "Step 16/18 — Skipping SSL (not selected)"
     fi
-    complete_step 15
+    complete_step 16
 fi
 
 # ============================================================
-# Step 16: Supervisor
+# Step 17: Supervisor
 # ============================================================
-if should_run 16; then
-    print_header "Step 16/17 — Installing Supervisor"
+if should_run 17; then
+    print_header "Step 17/18 — Installing Supervisor"
     apt install -y supervisor
 
     cat > "/etc/supervisor/conf.d/laravel-worker.conf" <<SUPEOF
@@ -730,14 +735,14 @@ SUPEOF
     supervisorctl update
     supervisorctl start "laravel-worker:*" 2>/dev/null || true
     print_success "Supervisor configured (${WORKER_COUNT} queue workers)."
-    complete_step 16
+    complete_step 17
 fi
 
 # ============================================================
-# Step 17: Laravel Scheduler Cron
+# Step 18: Laravel Scheduler Cron
 # ============================================================
-if should_run 17; then
-    print_header "Step 17/17 — Adding Laravel Scheduler Cron"
+if should_run 18; then
+    print_header "Step 18/18 — Adding Laravel Scheduler Cron"
     CRON_CMD="* * * * * cd ${PROJECT_PATH} && php artisan schedule:run >> /dev/null 2>&1"
     if ! crontab -u www-data -l 2>/dev/null | grep -q "schedule:run"; then
         (crontab -u www-data -l 2>/dev/null; echo "$CRON_CMD") | crontab -u www-data -
@@ -745,7 +750,7 @@ if should_run 17; then
     else
         print_warning "Scheduler cron already exists."
     fi
-    complete_step 17
+    complete_step 18
 fi
 
 # ============================================================
