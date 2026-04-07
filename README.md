@@ -292,6 +292,61 @@ laravel-deployr/
 
 ## Development
 
+### Local Testing with Docker
+
+You can test the full deploy flow locally on your machine without a real server using Docker. No VPS needed — if something breaks, just delete the container and start fresh.
+
+**Prerequisites:** Docker Desktop running.
+
+```bash
+# Start an Ubuntu 22.04 container with the repo mounted
+docker run -it --rm \
+  --privileged \
+  --name deployr-test \
+  -v "$(pwd):/opt/deployr" \
+  ubuntu:22.04 bash
+```
+
+Inside the container:
+
+```bash
+# Install systemd and basic tools
+apt-get update -qq && apt-get install -y systemctl curl git
+
+# Go to the mounted repo
+cd /opt/deployr
+
+# Run a deploy (non-interactive example)
+APP_NAME="TestApp" \
+DOMAIN="test.local" \
+SETUP_SSL="false" \
+DB_TYPE="postgresql" \
+DB_NAME="testdb" \
+DB_USER="testuser" \
+DB_PASS="secret" \
+DB_REMOTE_ACCESS="false" \
+PHP_VERSION="8.4" \
+BASE_PATH="/var/www/test" \
+GIT_REPO="git@github.com:yourorg/yourrepo.git" \
+GIT_BRANCH="main" \
+WORKER_COUNT="2" \
+SETUP_REDIS="false" \
+SETUP_NODEJS="false" \
+bash deployr deploy --app testapp --non-interactive
+```
+
+> **Note:** `systemctl` commands may behave differently inside Docker since there is no full init system. Steps that install packages and write config files will work correctly; service start/enable calls may emit warnings that can be safely ignored during local testing.
+
+To test a specific step in isolation, source the relevant file directly:
+
+```bash
+# Example: test the PHP installation step only
+source lib/core.sh
+source lib/steps/05_php.sh
+PHP_VERSION=8.4 DB_TYPE=postgresql OS_ID=ubuntu
+step_php
+```
+
 ### Running Tests Locally
 
 ```bash
