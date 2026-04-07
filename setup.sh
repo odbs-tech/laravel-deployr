@@ -209,6 +209,15 @@ apt install -y software-properties-common ca-certificates lsb-release apt-transp
 print_success "Essential packages installed."
 
 # ============================================================
+# Nginx
+# ============================================================
+print_header "Installing Nginx"
+apt install -y nginx
+systemctl enable nginx
+systemctl start nginx
+print_success "Nginx installed and started."
+
+# ============================================================
 # Firewall
 # ============================================================
 print_header "Configuring Firewall"
@@ -263,15 +272,6 @@ else
     ask_yes_no "Continue anyway?" "y" CONTINUE_AFTER_SSH
     if [ "$CONTINUE_AFTER_SSH" = "false" ]; then exit 1; fi
 fi
-
-# ============================================================
-# Nginx
-# ============================================================
-print_header "Installing Nginx"
-apt install -y nginx
-systemctl enable nginx
-systemctl start nginx
-print_success "Nginx installed and started."
 
 # ============================================================
 # PHP
