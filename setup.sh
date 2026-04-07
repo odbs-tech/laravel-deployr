@@ -8,6 +8,12 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+CONFIG_FILE="/root/.laravel-deployr.conf"
+CURRENT_STEP=0
+
+# ============================================================
+# Helper Functions
+# ============================================================
 print_header() {
     echo -e "\n${CYAN}========================================${NC}"
     echo -e "${CYAN}  $1${NC}"
@@ -56,8 +62,63 @@ ask_yes_no() {
     esac
 }
 
+save_config() {
+    cat > "$CONFIG_FILE" <<CFGEOF
+COMPLETED_STEP=${CURRENT_STEP}
+APP_NAME="${APP_NAME}"
+DOMAIN="${DOMAIN}"
+SETUP_SSL="${SETUP_SSL}"
+SSL_EMAIL="${SSL_EMAIL}"
+DB_TYPE="${DB_TYPE}"
+DB_NAME="${DB_NAME}"
+DB_USER="${DB_USER}"
+DB_PASS="${DB_PASS}"
+DB_REMOTE_ACCESS="${DB_REMOTE_ACCESS}"
+PHP_VERSION="${PHP_VERSION}"
+PROJECT_PATH="${PROJECT_PATH}"
+GIT_REPO="${GIT_REPO}"
+GIT_BRANCH="${GIT_BRANCH}"
+WORKER_COUNT="${WORKER_COUNT}"
+SETUP_REDIS="${SETUP_REDIS}"
+REDIS_HOST="${REDIS_HOST}"
+REDIS_PORT="${REDIS_PORT}"
+CFGEOF
+    chmod 600 "$CONFIG_FILE"
+}
+
+complete_step() {
+    CURRENT_STEP=$1
+    save_config
+    print_success "Step $1 completed."
+}
+
+should_run() {
+    [ "$CURRENT_STEP" -lt "$1" ]
+}
+
+STEP_NAMES=(
+    ""
+    "System Update"
+    "Essential Packages"
+    "Nginx Install"
+    "Firewall"
+    "SSH Key"
+    "PHP"
+    "Composer"
+    "Database"
+    "Redis"
+    "Git Clone"
+    ".env File"
+    "Dependencies & Laravel Setup"
+    "File Permissions"
+    "Nginx Virtual Host"
+    "SSL Certificate"
+    "Supervisor"
+    "Scheduler Cron"
+)
+
 # ============================================================
-# OS Detection
+# Banner & Root Check
 # ============================================================
 echo -e "${CYAN}"
 echo '  _                          _   ____             _                 '
@@ -74,6 +135,9 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# ============================================================
+# OS Detection
+# ============================================================
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS_NAME="$NAME"
@@ -92,347 +156,410 @@ if [[ "$OS_ID" != "ubuntu" && "$OS_ID" != "debian" ]]; then
 fi
 
 # ============================================================
-# Interactive Questions
+# Resume or Fresh Start
 # ============================================================
-print_header "Configuration"
+RESUME_STEP=0
 
-# App Name
-ask "Application name" "Laravel" APP_NAME
+if [ -f "$CONFIG_FILE" ]; then
+    source "$CONFIG_FILE"
+    RESUME_STEP=${COMPLETED_STEP:-0}
 
-# Domain
-ask "Domain name (e.g. api.example.com)" "" DOMAIN
-while [ -z "$DOMAIN" ]; do
-    print_error "Domain name cannot be empty."
-    ask "Domain name (e.g. api.example.com)" "" DOMAIN
-done
+    if [ "$RESUME_STEP" -gt 0 ]; then
+        echo ""
+        print_warning "Previous installation found — failed/stopped at step $RESUME_STEP: ${STEP_NAMES[$RESUME_STEP]}"
+        echo ""
+        echo -e "  ${YELLOW}1)${NC} Resume from step $((RESUME_STEP + 1)): ${GREEN}${STEP_NAMES[$((RESUME_STEP + 1))]}${NC}"
+        echo -e "  ${YELLOW}2)${NC} Start fresh (re-ask all questions)"
+        echo ""
+        ask "Choose" "1" RESUME_CHOICE
 
-# SSL
-ask_yes_no "Setup SSL (Let's Encrypt)?" "y" SETUP_SSL
-
-if [ "$SETUP_SSL" = "true" ]; then
-    ask "Email for SSL certificate" "" SSL_EMAIL
-    while [ -z "$SSL_EMAIL" ]; do
-        print_error "Email is required for SSL."
-        ask "Email for SSL certificate" "" SSL_EMAIL
-    done
-fi
-
-# Database
-echo ""
-echo -e "${YELLOW}Database selection:${NC}"
-echo "  1) PostgreSQL"
-echo "  2) MySQL"
-ask "Database" "1" DB_CHOICE
-case "$DB_CHOICE" in
-    2) DB_TYPE="mysql" ;;
-    *) DB_TYPE="postgresql" ;;
-esac
-print_success "Database: $DB_TYPE"
-
-ask "Database name" "" DB_NAME
-while [ -z "$DB_NAME" ]; do
-    print_error "Database name cannot be empty."
-    ask "Database name" "" DB_NAME
-done
-ask "Database username" "" DB_USER
-while [ -z "$DB_USER" ]; do
-    print_error "Username cannot be empty."
-    ask "Database username" "" DB_USER
-done
-ask_password "Database password" DB_PASS
-while [ -z "$DB_PASS" ]; do
-    print_error "Password cannot be empty."
-    ask_password "Database password" DB_PASS
-done
-ask_yes_no "Enable remote database access?" "n" DB_REMOTE_ACCESS
-
-# PHP
-echo ""
-ask "PHP version" "8.4" PHP_VERSION
-
-# Project path
-ask "Project directory" "/var/www/$DOMAIN" PROJECT_PATH
-
-# Git repo
-ask "Git SSH repo URL (e.g. git@github.com:user/repo.git)" "" GIT_REPO
-while [ -z "$GIT_REPO" ]; do
-    print_error "Git repo URL cannot be empty."
-    ask "Git SSH repo URL" "" GIT_REPO
-done
-ask "Git branch" "main" GIT_BRANCH
-
-# Supervisor
-ask "Supervisor worker count" "8" WORKER_COUNT
-
-# Redis
-ask_yes_no "Install Redis?" "y" SETUP_REDIS
-REDIS_HOST="127.0.0.1"
-REDIS_PORT="6379"
-
-# ============================================================
-# Summary
-# ============================================================
-print_header "Configuration Summary"
-echo -e "  App Name:       ${GREEN}$APP_NAME${NC}"
-echo -e "  Domain:         ${GREEN}$DOMAIN${NC}"
-echo -e "  SSL:            ${GREEN}$SETUP_SSL${NC}"
-echo -e "  Database:       ${GREEN}$DB_TYPE${NC}"
-echo -e "  DB Name:        ${GREEN}$DB_NAME${NC}"
-echo -e "  DB User:        ${GREEN}$DB_USER${NC}"
-echo -e "  DB Remote:      ${GREEN}$DB_REMOTE_ACCESS${NC}"
-echo -e "  PHP Version:    ${GREEN}$PHP_VERSION${NC}"
-echo -e "  Project Dir:    ${GREEN}$PROJECT_PATH${NC}"
-echo -e "  Git Repo:       ${GREEN}$GIT_REPO${NC}"
-echo -e "  Git Branch:     ${GREEN}$GIT_BRANCH${NC}"
-echo -e "  Workers:        ${GREEN}$WORKER_COUNT${NC}"
-echo -e "  Redis:          ${GREEN}$SETUP_REDIS${NC}"
-echo ""
-ask_yes_no "Proceed with installation?" "y" PROCEED
-if [ "$PROCEED" = "false" ]; then
-    echo "Installation cancelled."
-    exit 0
-fi
-
-# ============================================================
-# System Update
-# ============================================================
-print_header "Updating System"
-apt update && apt upgrade -y
-print_success "System updated."
-
-# ============================================================
-# Essential Packages
-# ============================================================
-print_header "Installing Essential Packages"
-apt install -y software-properties-common ca-certificates lsb-release apt-transport-https \
-    curl wget git zip unzip ufw
-print_success "Essential packages installed."
-
-# ============================================================
-# Nginx
-# ============================================================
-print_header "Installing Nginx"
-apt install -y nginx
-systemctl enable nginx
-systemctl start nginx
-print_success "Nginx installed and started."
-
-# ============================================================
-# Firewall
-# ============================================================
-print_header "Configuring Firewall"
-ufw allow OpenSSH
-ufw allow 'Nginx Full'
-ufw --force enable
-print_success "Firewall configured (SSH + Nginx Full)."
-
-# ============================================================
-# SSH Key for GitHub
-# ============================================================
-print_header "Setting Up SSH Key for GitHub"
-
-SSH_KEY_PATH="/root/.ssh/id_ed25519"
-
-if [ -f "$SSH_KEY_PATH" ]; then
-    print_warning "SSH key already exists at $SSH_KEY_PATH"
-    ask_yes_no "Generate a new SSH key anyway?" "n" REGEN_SSH
-    if [ "$REGEN_SSH" = "true" ]; then
-        ssh-keygen -t ed25519 -C "server@${DOMAIN}" -f "$SSH_KEY_PATH" -N ""
-        print_success "New SSH key generated."
-    fi
-else
-    ssh-keygen -t ed25519 -C "server@${DOMAIN}" -f "$SSH_KEY_PATH" -N ""
-    print_success "SSH key generated."
-fi
-
-# Start ssh-agent and add key
-eval "$(ssh-agent -s)" >/dev/null 2>&1
-ssh-add "$SSH_KEY_PATH" 2>/dev/null
-
-# Add GitHub to known hosts
-ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null
-
-echo ""
-echo -e "${CYAN}========================================${NC}"
-echo -e "${CYAN}  Add this SSH key to your GitHub account${NC}"
-echo -e "${CYAN}  (Settings > SSH Keys > New SSH Key)${NC}"
-echo -e "${CYAN}========================================${NC}"
-echo ""
-cat "${SSH_KEY_PATH}.pub"
-echo ""
-echo -e "${YELLOW}After adding the key to GitHub, press ENTER to continue...${NC}"
-read -r
-
-# Test SSH connection
-print_warning "Testing GitHub SSH connection..."
-if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-    print_success "GitHub SSH connection successful."
-else
-    print_warning "Could not verify GitHub connection. The clone might still work."
-    ask_yes_no "Continue anyway?" "y" CONTINUE_AFTER_SSH
-    if [ "$CONTINUE_AFTER_SSH" = "false" ]; then exit 1; fi
-fi
-
-# ============================================================
-# PHP
-# ============================================================
-print_header "Installing PHP $PHP_VERSION"
-
-LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
-apt update
-
-apt install -y \
-    php${PHP_VERSION}-common \
-    php${PHP_VERSION}-fpm \
-    php${PHP_VERSION}-xml \
-    php${PHP_VERSION}-bcmath \
-    php${PHP_VERSION}-mbstring \
-    php${PHP_VERSION}-zip \
-    php${PHP_VERSION}-curl \
-    php${PHP_VERSION}-gd \
-    php${PHP_VERSION}-intl \
-    php${PHP_VERSION}-imagick \
-    php${PHP_VERSION}-redis
-
-if [ "$DB_TYPE" = "mysql" ]; then
-    apt install -y php${PHP_VERSION}-mysql
-else
-    apt install -y php${PHP_VERSION}-pgsql
-fi
-
-print_success "PHP $PHP_VERSION installed."
-
-# ============================================================
-# Composer
-# ============================================================
-print_header "Installing Composer"
-curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/bin --filename=composer
-print_success "Composer installed: $(composer --version)"
-
-# ============================================================
-# Database
-# ============================================================
-print_header "Installing $DB_TYPE"
-
-if [ "$DB_TYPE" = "mysql" ]; then
-    apt install -y mysql-server
-    systemctl enable mysql
-    systemctl start mysql
-
-    if [ "$DB_REMOTE_ACCESS" = "true" ]; then
-        DB_HOST_SPEC="%"
-    else
-        DB_HOST_SPEC="localhost"
-    fi
-
-    mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST_SPEC}' IDENTIFIED WITH mysql_native_password BY '${DB_PASS}';"
-    mysql -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
-    mysql -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${DB_HOST_SPEC}';"
-    mysql -e "FLUSH PRIVILEGES;"
-
-    if [ "$DB_REMOTE_ACCESS" = "true" ]; then
-        MYSQL_CNF=$(find /etc/mysql -name "mysqld.cnf" | head -1)
-        if [ -n "$MYSQL_CNF" ]; then
-            sed -i 's/^bind-address\s*=.*/bind-address = 0.0.0.0/' "$MYSQL_CNF"
-            systemctl restart mysql
-        fi
-        ufw allow 3306/tcp
-        print_success "MySQL remote access enabled (port 3306)."
-    fi
-
-    print_success "MySQL installed. User and database created."
-else
-    apt install -y postgresql postgresql-contrib
-    systemctl enable postgresql
-    systemctl start postgresql
-
-    sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${DB_USER}') THEN CREATE ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASS}'; END IF; END \$\$;"
-    sudo -u postgres psql -c "SELECT 'CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='${DB_NAME}')\gexec"
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-
-    PG_HBA=$(find /etc/postgresql -name pg_hba.conf | head -1)
-    PG_CONF=$(find /etc/postgresql -name postgresql.conf | head -1)
-
-    if [ -n "$PG_HBA" ]; then
-        if [ "$DB_REMOTE_ACCESS" = "true" ]; then
-            # Allow remote connections
-            if ! grep -q "host.*${DB_NAME}.*${DB_USER}.*0.0.0.0/0" "$PG_HBA"; then
-                echo "host    ${DB_NAME}    ${DB_USER}    0.0.0.0/0    md5" >> "$PG_HBA"
-            fi
-            if [ -n "$PG_CONF" ]; then
-                sed -i "s/^#\?listen_addresses\s*=.*/listen_addresses = '*'/" "$PG_CONF"
-            fi
-            ufw allow 5432/tcp
-            print_success "PostgreSQL remote access enabled (port 5432)."
+        if [ "$RESUME_CHOICE" = "1" ]; then
+            CURRENT_STEP=$RESUME_STEP
+            print_success "Resuming from step $((CURRENT_STEP + 1)): ${STEP_NAMES[$((CURRENT_STEP + 1))]}"
+            echo ""
+            echo -e "  App Name:       ${GREEN}$APP_NAME${NC}"
+            echo -e "  Domain:         ${GREEN}$DOMAIN${NC}"
+            echo -e "  Database:       ${GREEN}$DB_TYPE ($DB_NAME)${NC}"
+            echo -e "  PHP:            ${GREEN}$PHP_VERSION${NC}"
+            echo -e "  Git:            ${GREEN}$GIT_REPO ($GIT_BRANCH)${NC}"
+            echo ""
         else
-            if ! grep -q "host.*${DB_NAME}.*${DB_USER}" "$PG_HBA"; then
-                sed -i "/^# IPv4 local connections/a host    ${DB_NAME}    ${DB_USER}    127.0.0.1/32    md5" "$PG_HBA"
-            fi
+            CURRENT_STEP=0
+            rm -f "$CONFIG_FILE"
         fi
-        systemctl restart postgresql
     fi
-
-    print_success "PostgreSQL installed. User and database created."
 fi
 
 # ============================================================
-# Redis
+# Interactive Questions (skip if resuming)
 # ============================================================
-if [ "$SETUP_REDIS" = "true" ]; then
-    print_header "Installing Redis"
-    apt install -y redis-server
+if [ "$CURRENT_STEP" -eq 0 ]; then
+    print_header "Configuration"
 
-    sed -i 's/^supervised no/supervised systemd/' /etc/redis/redis.conf
-    if ! grep -q "^supervised systemd" /etc/redis/redis.conf; then
-        sed -i '/^# supervised/a supervised systemd' /etc/redis/redis.conf
+    # App Name
+    ask "Application name" "Laravel" APP_NAME
+
+    # Domain
+    ask "Domain name (e.g. api.example.com)" "" DOMAIN
+    while [ -z "$DOMAIN" ]; do
+        print_error "Domain name cannot be empty."
+        ask "Domain name (e.g. api.example.com)" "" DOMAIN
+    done
+
+    # SSL
+    ask_yes_no "Setup SSL (Let's Encrypt)?" "y" SETUP_SSL
+
+    if [ "$SETUP_SSL" = "true" ]; then
+        ask "Email for SSL certificate" "" SSL_EMAIL
+        while [ -z "$SSL_EMAIL" ]; do
+            print_error "Email is required for SSL."
+            ask "Email for SSL certificate" "" SSL_EMAIL
+        done
     fi
 
-    systemctl enable redis-server
-    systemctl restart redis-server
-    print_success "Redis installed and configured."
+    # Database
+    echo ""
+    echo -e "${YELLOW}Database selection:${NC}"
+    echo "  1) PostgreSQL"
+    echo "  2) MySQL"
+    ask "Database" "1" DB_CHOICE
+    case "$DB_CHOICE" in
+        2) DB_TYPE="mysql" ;;
+        *) DB_TYPE="postgresql" ;;
+    esac
+    print_success "Database: $DB_TYPE"
+
+    ask "Database name" "" DB_NAME
+    while [ -z "$DB_NAME" ]; do
+        print_error "Database name cannot be empty."
+        ask "Database name" "" DB_NAME
+    done
+    ask "Database username" "" DB_USER
+    while [ -z "$DB_USER" ]; do
+        print_error "Username cannot be empty."
+        ask "Database username" "" DB_USER
+    done
+    ask_password "Database password" DB_PASS
+    while [ -z "$DB_PASS" ]; do
+        print_error "Password cannot be empty."
+        ask_password "Database password" DB_PASS
+    done
+    ask_yes_no "Enable remote database access?" "n" DB_REMOTE_ACCESS
+
+    # PHP
+    echo ""
+    ask "PHP version" "8.4" PHP_VERSION
+
+    # Project path
+    ask "Project directory" "/var/www/$DOMAIN" PROJECT_PATH
+
+    # Git repo
+    ask "Git SSH repo URL (e.g. git@github.com:user/repo.git)" "" GIT_REPO
+    while [ -z "$GIT_REPO" ]; do
+        print_error "Git repo URL cannot be empty."
+        ask "Git SSH repo URL" "" GIT_REPO
+    done
+    ask "Git branch" "main" GIT_BRANCH
+
+    # Supervisor
+    ask "Supervisor worker count" "8" WORKER_COUNT
+
+    # Redis
+    ask_yes_no "Install Redis?" "y" SETUP_REDIS
+    REDIS_HOST="127.0.0.1"
+    REDIS_PORT="6379"
+
+    # ============================================================
+    # Summary
+    # ============================================================
+    print_header "Configuration Summary"
+    echo -e "  App Name:       ${GREEN}$APP_NAME${NC}"
+    echo -e "  Domain:         ${GREEN}$DOMAIN${NC}"
+    echo -e "  SSL:            ${GREEN}$SETUP_SSL${NC}"
+    echo -e "  Database:       ${GREEN}$DB_TYPE${NC}"
+    echo -e "  DB Name:        ${GREEN}$DB_NAME${NC}"
+    echo -e "  DB User:        ${GREEN}$DB_USER${NC}"
+    echo -e "  DB Remote:      ${GREEN}$DB_REMOTE_ACCESS${NC}"
+    echo -e "  PHP Version:    ${GREEN}$PHP_VERSION${NC}"
+    echo -e "  Project Dir:    ${GREEN}$PROJECT_PATH${NC}"
+    echo -e "  Git Repo:       ${GREEN}$GIT_REPO${NC}"
+    echo -e "  Git Branch:     ${GREEN}$GIT_BRANCH${NC}"
+    echo -e "  Workers:        ${GREEN}$WORKER_COUNT${NC}"
+    echo -e "  Redis:          ${GREEN}$SETUP_REDIS${NC}"
+    echo ""
+    ask_yes_no "Proceed with installation?" "y" PROCEED
+    if [ "$PROCEED" = "false" ]; then
+        echo "Installation cancelled."
+        exit 0
+    fi
+
+    save_config
+    print_success "Config saved to $CONFIG_FILE"
 fi
 
 # ============================================================
-# Clone Project
+# Step 1: System Update
 # ============================================================
-print_header "Cloning Project"
+if should_run 1; then
+    print_header "Step 1/17 — Updating System"
+    apt update && apt upgrade -y
+    complete_step 1
+fi
 
-mkdir -p "$(dirname "$PROJECT_PATH")"
+# ============================================================
+# Step 2: Essential Packages
+# ============================================================
+if should_run 2; then
+    print_header "Step 2/17 — Installing Essential Packages"
+    apt install -y software-properties-common ca-certificates lsb-release apt-transport-https \
+        curl wget git zip unzip ufw
+    complete_step 2
+fi
 
-if [ -d "$PROJECT_PATH" ]; then
-    print_warning "Directory already exists: $PROJECT_PATH"
-    ask_yes_no "Delete and re-clone?" "n" RECLONE
-    if [ "$RECLONE" = "true" ]; then
-        rm -rf "$PROJECT_PATH"
-        git clone -b "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_PATH"
+# ============================================================
+# Step 3: Nginx Install
+# ============================================================
+if should_run 3; then
+    print_header "Step 3/17 — Installing Nginx"
+    apt install -y nginx
+    systemctl enable nginx
+    systemctl start nginx
+    complete_step 3
+fi
+
+# ============================================================
+# Step 4: Firewall
+# ============================================================
+if should_run 4; then
+    print_header "Step 4/17 — Configuring Firewall"
+    ufw allow OpenSSH
+    ufw allow 'Nginx Full'
+    ufw --force enable
+    complete_step 4
+fi
+
+# ============================================================
+# Step 5: SSH Key for GitHub
+# ============================================================
+if should_run 5; then
+    print_header "Step 5/17 — Setting Up SSH Key for GitHub"
+
+    SSH_KEY_PATH="/root/.ssh/id_ed25519"
+
+    if [ -f "$SSH_KEY_PATH" ]; then
+        print_warning "SSH key already exists at $SSH_KEY_PATH"
+        ask_yes_no "Generate a new SSH key anyway?" "n" REGEN_SSH
+        if [ "$REGEN_SSH" = "true" ]; then
+            ssh-keygen -t ed25519 -C "server@${DOMAIN}" -f "$SSH_KEY_PATH" -N ""
+            print_success "New SSH key generated."
+        fi
     else
-        print_warning "Keeping existing directory. Running git pull..."
-        cd "$PROJECT_PATH" && git pull origin "$GIT_BRANCH"
+        ssh-keygen -t ed25519 -C "server@${DOMAIN}" -f "$SSH_KEY_PATH" -N ""
+        print_success "SSH key generated."
     fi
-else
-    git clone -b "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_PATH"
+
+    eval "$(ssh-agent -s)" >/dev/null 2>&1
+    ssh-add "$SSH_KEY_PATH" 2>/dev/null
+    ssh-keyscan -t ed25519 github.com >> /root/.ssh/known_hosts 2>/dev/null
+
+    echo ""
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  Add this SSH key to your GitHub account${NC}"
+    echo -e "${CYAN}  (Settings > SSH Keys > New SSH Key)${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo ""
+    cat "${SSH_KEY_PATH}.pub"
+    echo ""
+    echo -e "${YELLOW}After adding the key to GitHub, press ENTER to continue...${NC}"
+    read -r
+
+    print_warning "Testing GitHub SSH connection..."
+    if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+        print_success "GitHub SSH connection successful."
+    else
+        print_warning "Could not verify GitHub connection. The clone might still work."
+        ask_yes_no "Continue anyway?" "y" CONTINUE_AFTER_SSH
+        if [ "$CONTINUE_AFTER_SSH" = "false" ]; then exit 1; fi
+    fi
+
+    complete_step 5
 fi
 
-print_success "Project cloned: $PROJECT_PATH"
-
 # ============================================================
-# .env File
+# Step 6: PHP
 # ============================================================
-print_header "Creating .env File"
+if should_run 6; then
+    print_header "Step 6/17 — Installing PHP $PHP_VERSION"
 
-if [ "$DB_TYPE" = "mysql" ]; then
-    DB_CONNECTION="mysql"
-    DB_CONNECTION_URL="mysql://${DB_USER}:${DB_PASS}@127.0.0.1:3306/${DB_NAME}"
-    DB_PORT="3306"
-else
-    DB_CONNECTION="pgsql"
-    DB_CONNECTION_URL="postgresql://${DB_USER}:${DB_PASS}@127.0.0.1:5432/${DB_NAME}"
-    DB_PORT="5432"
+    LC_ALL=C.UTF-8 add-apt-repository -y ppa:ondrej/php
+    apt update
+
+    apt install -y \
+        php${PHP_VERSION}-common \
+        php${PHP_VERSION}-fpm \
+        php${PHP_VERSION}-xml \
+        php${PHP_VERSION}-bcmath \
+        php${PHP_VERSION}-mbstring \
+        php${PHP_VERSION}-zip \
+        php${PHP_VERSION}-curl \
+        php${PHP_VERSION}-gd \
+        php${PHP_VERSION}-intl \
+        php${PHP_VERSION}-imagick \
+        php${PHP_VERSION}-redis
+
+    if [ "$DB_TYPE" = "mysql" ]; then
+        apt install -y php${PHP_VERSION}-mysql
+    else
+        apt install -y php${PHP_VERSION}-pgsql
+    fi
+
+    complete_step 6
 fi
 
-APP_KEY_VALUE=$(php ${PROJECT_PATH}/artisan key:generate --show 2>/dev/null || echo "base64:$(openssl rand -base64 32)")
+# ============================================================
+# Step 7: Composer
+# ============================================================
+if should_run 7; then
+    print_header "Step 7/17 — Installing Composer"
+    curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/bin --filename=composer
+    print_success "Composer installed: $(composer --version)"
+    complete_step 7
+fi
 
-cat > "${PROJECT_PATH}/.env" <<ENVEOF
+# ============================================================
+# Step 8: Database
+# ============================================================
+if should_run 8; then
+    print_header "Step 8/17 — Installing $DB_TYPE"
+
+    if [ "$DB_TYPE" = "mysql" ]; then
+        apt install -y mysql-server
+        systemctl enable mysql
+        systemctl start mysql
+
+        if [ "$DB_REMOTE_ACCESS" = "true" ]; then
+            DB_HOST_SPEC="%"
+        else
+            DB_HOST_SPEC="localhost"
+        fi
+
+        mysql -e "CREATE USER IF NOT EXISTS '${DB_USER}'@'${DB_HOST_SPEC}' IDENTIFIED WITH mysql_native_password BY '${DB_PASS}';"
+        mysql -e "CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\`;"
+        mysql -e "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'${DB_HOST_SPEC}';"
+        mysql -e "FLUSH PRIVILEGES;"
+
+        if [ "$DB_REMOTE_ACCESS" = "true" ]; then
+            MYSQL_CNF=$(find /etc/mysql -name "mysqld.cnf" | head -1)
+            if [ -n "$MYSQL_CNF" ]; then
+                sed -i 's/^bind-address\s*=.*/bind-address = 0.0.0.0/' "$MYSQL_CNF"
+                systemctl restart mysql
+            fi
+            ufw allow 3306/tcp
+            print_success "MySQL remote access enabled (port 3306)."
+        fi
+
+        print_success "MySQL installed. User and database created."
+    else
+        apt install -y postgresql postgresql-contrib
+        systemctl enable postgresql
+        systemctl start postgresql
+
+        sudo -u postgres psql -c "DO \$\$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='${DB_USER}') THEN CREATE ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASS}'; END IF; END \$\$;"
+        sudo -u postgres psql -c "SELECT 'CREATE DATABASE ${DB_NAME} OWNER ${DB_USER}' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='${DB_NAME}')\gexec"
+        sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+
+        PG_HBA=$(find /etc/postgresql -name pg_hba.conf | head -1)
+        PG_CONF=$(find /etc/postgresql -name postgresql.conf | head -1)
+
+        if [ -n "$PG_HBA" ]; then
+            if [ "$DB_REMOTE_ACCESS" = "true" ]; then
+                if ! grep -q "host.*${DB_NAME}.*${DB_USER}.*0.0.0.0/0" "$PG_HBA"; then
+                    echo "host    ${DB_NAME}    ${DB_USER}    0.0.0.0/0    md5" >> "$PG_HBA"
+                fi
+                if [ -n "$PG_CONF" ]; then
+                    sed -i "s/^#\?listen_addresses\s*=.*/listen_addresses = '*'/" "$PG_CONF"
+                fi
+                ufw allow 5432/tcp
+                print_success "PostgreSQL remote access enabled (port 5432)."
+            else
+                if ! grep -q "host.*${DB_NAME}.*${DB_USER}" "$PG_HBA"; then
+                    sed -i "/^# IPv4 local connections/a host    ${DB_NAME}    ${DB_USER}    127.0.0.1/32    md5" "$PG_HBA"
+                fi
+            fi
+            systemctl restart postgresql
+        fi
+
+        print_success "PostgreSQL installed. User and database created."
+    fi
+
+    complete_step 8
+fi
+
+# ============================================================
+# Step 9: Redis
+# ============================================================
+if should_run 9; then
+    if [ "$SETUP_REDIS" = "true" ]; then
+        print_header "Step 9/17 — Installing Redis"
+        apt install -y redis-server
+
+        sed -i 's/^supervised no/supervised systemd/' /etc/redis/redis.conf
+        if ! grep -q "^supervised systemd" /etc/redis/redis.conf; then
+            sed -i '/^# supervised/a supervised systemd' /etc/redis/redis.conf
+        fi
+
+        systemctl enable redis-server
+        systemctl restart redis-server
+        print_success "Redis installed and configured."
+    else
+        print_header "Step 9/17 — Skipping Redis (not selected)"
+    fi
+    complete_step 9
+fi
+
+# ============================================================
+# Step 10: Clone Project
+# ============================================================
+if should_run 10; then
+    print_header "Step 10/17 — Cloning Project"
+
+    mkdir -p "$(dirname "$PROJECT_PATH")"
+
+    if [ -d "$PROJECT_PATH" ]; then
+        print_warning "Directory already exists: $PROJECT_PATH"
+        ask_yes_no "Delete and re-clone?" "n" RECLONE
+        if [ "$RECLONE" = "true" ]; then
+            rm -rf "$PROJECT_PATH"
+            git clone -b "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_PATH"
+        else
+            print_warning "Keeping existing directory. Running git pull..."
+            cd "$PROJECT_PATH" && git pull origin "$GIT_BRANCH"
+        fi
+    else
+        git clone -b "$GIT_BRANCH" "$GIT_REPO" "$PROJECT_PATH"
+    fi
+
+    print_success "Project cloned: $PROJECT_PATH"
+    complete_step 10
+fi
+
+# ============================================================
+# Step 11: .env File
+# ============================================================
+if should_run 11; then
+    print_header "Step 11/17 — Creating .env File"
+
+    if [ "$DB_TYPE" = "mysql" ]; then
+        DB_CONNECTION="mysql"
+        DB_PORT="3306"
+    else
+        DB_CONNECTION="pgsql"
+        DB_PORT="5432"
+    fi
+
+    APP_KEY_VALUE=$(php ${PROJECT_PATH}/artisan key:generate --show 2>/dev/null || echo "base64:$(openssl rand -base64 32)")
+
+    cat > "${PROJECT_PATH}/.env" <<ENVEOF
 APP_NAME="${APP_NAME}"
 APP_ENV=production
 APP_KEY=${APP_KEY_VALUE}
@@ -475,45 +602,47 @@ AWS_DEFAULT_REGION=
 AWS_BUCKET=
 ENVEOF
 
-print_success ".env file created: ${PROJECT_PATH}/.env"
+    print_success ".env file created: ${PROJECT_PATH}/.env"
+    complete_step 11
+fi
 
 # ============================================================
-# Install Dependencies
+# Step 12: Dependencies & Laravel Setup
 # ============================================================
-print_header "Installing Dependencies"
-cd "$PROJECT_PATH"
+if should_run 12; then
+    print_header "Step 12/17 — Installing Dependencies & Setting Up Laravel"
+    cd "$PROJECT_PATH"
 
-composer install --no-dev --optimize-autoloader
-print_success "Composer dependencies installed."
+    composer install --no-dev --optimize-autoloader
+    print_success "Composer dependencies installed."
 
-# ============================================================
-# Laravel Setup
-# ============================================================
-print_header "Setting Up Laravel"
+    php artisan config:cache
+    php artisan route:cache
+    php artisan view:cache
+    php artisan migrate --force
 
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
-php artisan migrate --force
-
-print_success "Laravel configured and migrated."
+    print_success "Laravel configured and migrated."
+    complete_step 12
+fi
 
 # ============================================================
-# Permissions
+# Step 13: File Permissions
 # ============================================================
-print_header "Setting File Permissions"
-chown -R www-data:www-data "$PROJECT_PATH"
-chmod -R 775 "$PROJECT_PATH/storage"
-chmod -R 775 "$PROJECT_PATH/bootstrap/cache"
-
-print_success "File permissions set."
+if should_run 13; then
+    print_header "Step 13/17 — Setting File Permissions"
+    chown -R www-data:www-data "$PROJECT_PATH"
+    chmod -R 775 "$PROJECT_PATH/storage"
+    chmod -R 775 "$PROJECT_PATH/bootstrap/cache"
+    complete_step 13
+fi
 
 # ============================================================
-# Nginx Virtual Host
+# Step 14: Nginx Virtual Host
 # ============================================================
-print_header "Configuring Nginx"
+if should_run 14; then
+    print_header "Step 14/17 — Configuring Nginx Virtual Host"
 
-cat > "/etc/nginx/sites-available/${DOMAIN}" <<NGINXEOF
+    cat > "/etc/nginx/sites-available/${DOMAIN}" <<NGINXEOF
 server {
     listen 80;
     listen [::]:80;
@@ -549,33 +678,40 @@ server {
 }
 NGINXEOF
 
-ln -sf "/etc/nginx/sites-available/${DOMAIN}" "/etc/nginx/sites-enabled/${DOMAIN}"
-rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
-print_success "Nginx configured."
-
-# ============================================================
-# SSL (Let's Encrypt)
-# ============================================================
-if [ "$SETUP_SSL" = "true" ]; then
-    print_header "Installing SSL Certificate"
-    apt install -y certbot python3-certbot-nginx
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$SSL_EMAIL" --redirect
-    print_success "SSL certificate installed."
-
-    if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-        (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet && systemctl reload nginx") | crontab -
-        print_success "SSL auto-renewal cron added."
-    fi
+    ln -sf "/etc/nginx/sites-available/${DOMAIN}" "/etc/nginx/sites-enabled/${DOMAIN}"
+    rm -f /etc/nginx/sites-enabled/default
+    nginx -t && systemctl reload nginx
+    complete_step 14
 fi
 
 # ============================================================
-# Supervisor (Queue Workers)
+# Step 15: SSL
 # ============================================================
-print_header "Installing Supervisor"
-apt install -y supervisor
+if should_run 15; then
+    if [ "$SETUP_SSL" = "true" ]; then
+        print_header "Step 15/17 — Installing SSL Certificate"
+        apt install -y certbot python3-certbot-nginx
+        certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m "$SSL_EMAIL" --redirect
+        print_success "SSL certificate installed."
 
-cat > "/etc/supervisor/conf.d/laravel-worker.conf" <<SUPEOF
+        if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
+            (crontab -l 2>/dev/null; echo "0 3 * * * certbot renew --quiet && systemctl reload nginx") | crontab -
+            print_success "SSL auto-renewal cron added."
+        fi
+    else
+        print_header "Step 15/17 — Skipping SSL (not selected)"
+    fi
+    complete_step 15
+fi
+
+# ============================================================
+# Step 16: Supervisor
+# ============================================================
+if should_run 16; then
+    print_header "Step 16/17 — Installing Supervisor"
+    apt install -y supervisor
+
+    cat > "/etc/supervisor/conf.d/laravel-worker.conf" <<SUPEOF
 [program:laravel-worker]
 process_name=%(program_name)s_%(process_num)02d
 command=php ${PROJECT_PATH}/artisan queue:work redis --sleep=3 --tries=3 --max-time=3600
@@ -590,21 +726,26 @@ stdout_logfile=/var/log/laravel-worker.log
 stopwaitsecs=3600
 SUPEOF
 
-supervisorctl reread
-supervisorctl update
-supervisorctl start "laravel-worker:*" 2>/dev/null || true
-print_success "Supervisor configured (${WORKER_COUNT} queue workers)."
+    supervisorctl reread
+    supervisorctl update
+    supervisorctl start "laravel-worker:*" 2>/dev/null || true
+    print_success "Supervisor configured (${WORKER_COUNT} queue workers)."
+    complete_step 16
+fi
 
 # ============================================================
-# Laravel Scheduler Cron
+# Step 17: Laravel Scheduler Cron
 # ============================================================
-print_header "Adding Laravel Scheduler Cron"
-CRON_CMD="* * * * * cd ${PROJECT_PATH} && php artisan schedule:run >> /dev/null 2>&1"
-if ! crontab -u www-data -l 2>/dev/null | grep -q "schedule:run"; then
-    (crontab -u www-data -l 2>/dev/null; echo "$CRON_CMD") | crontab -u www-data -
-    print_success "Laravel scheduler cron added."
-else
-    print_warning "Scheduler cron already exists."
+if should_run 17; then
+    print_header "Step 17/17 — Adding Laravel Scheduler Cron"
+    CRON_CMD="* * * * * cd ${PROJECT_PATH} && php artisan schedule:run >> /dev/null 2>&1"
+    if ! crontab -u www-data -l 2>/dev/null | grep -q "schedule:run"; then
+        (crontab -u www-data -l 2>/dev/null; echo "$CRON_CMD") | crontab -u www-data -
+        print_success "Laravel scheduler cron added."
+    else
+        print_warning "Scheduler cron already exists."
+    fi
+    complete_step 17
 fi
 
 # ============================================================
@@ -626,4 +767,6 @@ echo -e "  1. Review ${PROJECT_PATH}/.env (fill in Mail, AWS credentials)"
 echo -e "  2. Check logs: tail -f ${PROJECT_PATH}/storage/logs/laravel.log"
 echo -e "  3. Monitor workers: supervisorctl status"
 echo ""
+
+rm -f "$CONFIG_FILE"
 print_success "Laravel Deployr finished successfully!"
